@@ -433,13 +433,13 @@ func (m *model) handleTranscriptScrollKey(msg tea.KeyMsg) bool {
 func (m model) banner() string {
 	left := logoStyle.Render(strings.Join([]string{
 		"██████████",
-		"  ██  ██  ",
-		"  ██  ██  ",
-		"  ██  ██  ",
-		"  ██  ██  ",
+		"█        █",
+		"█ >_     █",
+		"█        █",
+		"██████████",
 	}, "\n"))
 	info := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Zcoder π")+" "+mutedStyle.Render(m.startup.Version),
+		titleStyle.Render("ZcodeR")+" "+mutedStyle.Render(m.startup.Version),
 		mutedStyle.Render(displayModelName(m.startup.Model)),
 		boldStyle.Render("MCP")+" "+mutedStyle.Render(fmt.Sprintf("%d ready · %d tools", m.startup.MCPReady, m.startup.MCPTools)),
 		boldStyle.Render("Skill")+" "+mutedStyle.Render(fmt.Sprintf("%d/%d enabled", m.startup.SkillsEnabled, m.startup.SkillsTotal)),
@@ -449,7 +449,7 @@ func (m model) banner() string {
 		sectionStyle.Render("What's ready") + "\n" +
 			"- ReAct · Plan · Multi-Agent\n" +
 			"- grep · RAG · Web · MCP · Skill\n" +
-			"- Runtime · Snapshot · WeChat")
+			"- /cluster - an experiment function")
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", info, "  ", panel)
 }
 
@@ -1057,49 +1057,49 @@ const (
 )
 
 var (
-	logoStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	logoStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
 	titleStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	sectionStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	sectionStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
 	boldStyle             = lipgloss.NewStyle().Bold(true)
-	mutedStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	panelStyle            = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
-	userStyle             = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252")).Padding(0, 1)
-	assistantStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	mutedStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("146"))
+	panelStyle            = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("60")).Padding(0, 1)
+	userStyle             = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255")).Padding(0, 1)
+	assistantStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	errorStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	inputFillStyle        = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	inputCursorStyle      = lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("236"))
-	inputPromptStyle      = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252"))
-	inputTextStyle        = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252"))
+	inputPromptStyle      = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255"))
+	inputTextStyle        = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255"))
 	inputPlaceholderStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("236")).
-				Foreground(lipgloss.Color("244"))
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("110"))
 	statusStyle         = lipgloss.NewStyle()
-	modeStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	modelStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	okStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	modeStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
+	modelStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("146"))
+	okStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
 	scrollbarTrackStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("238"))
+		Foreground(lipgloss.Color("60"))
 	scrollbarThumbStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("39"))
-	thinkingStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+		Foreground(lipgloss.Color("110"))
+	thinkingStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
 	thinkingEntryStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("220")).
-				Foreground(lipgloss.Color("252")).
-				PaddingLeft(1)
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("110")).
+		Foreground(lipgloss.Color("255")).
+		PaddingLeft(1)
 	toolCallEntryStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("39")).
-				Foreground(lipgloss.Color("252")).
-				PaddingLeft(1)
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("110")).
+		Foreground(lipgloss.Color("255")).
+		PaddingLeft(1)
 	toolResultEntryStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("244")).
-				Foreground(lipgloss.Color("245")).
-				PaddingLeft(1)
-	toolCallHeaderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	toolResultHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
-	progressFillStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("103")).
+		Foreground(lipgloss.Color("146")).
+		PaddingLeft(1)
+	toolCallHeaderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
+	toolResultHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("146")).Bold(true)
+	progressFillStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("67"))
 	progressEmptyStyle    = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 )
 

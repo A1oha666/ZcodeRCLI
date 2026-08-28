@@ -163,9 +163,9 @@ func (m model) renderClusterBar(p cluster.Progress, width int) string {
 }
 
 var (
-	clusterPanelStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
-	clusterDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	clusterPanelStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("60")).Padding(0, 1)
+	clusterDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("67"))
 	clusterFailedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	clusterRunningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	clusterEmptyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	clusterRunningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
+	clusterEmptyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("103"))
 )
