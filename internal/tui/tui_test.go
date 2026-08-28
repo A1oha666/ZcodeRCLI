@@ -30,7 +30,7 @@ func TestStripTerminalControlResponses(t *testing.T) {
 }
 
 func TestMouseEscapeKeyMsgDoesNotEnterInput(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[<65;19;29M")})
 	got := updated.(model)
 	if got.input.Value() != "" {
@@ -63,7 +63,7 @@ func TestMouseWheelScrollsTranscriptAndDoesNotEnterInput(t *testing.T) {
 }
 
 func TestBracketInputStillWorksWithoutRecentMouseEvent(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
 	got := updated.(model)
 	if got.input.Value() != "[" {
@@ -86,7 +86,7 @@ func TestCompactTokenCount(t *testing.T) {
 }
 
 func TestContextStatusUsesMillionWindowAndGreyEmptyProgress(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"})
+	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"}, nil)
 	got := m.contextStatus(1200, 1000000)
 	plain := ansi.Strip(got)
 	if !strings.Contains(plain, "1% 1.2k/1.0M") {
@@ -103,7 +103,7 @@ func TestStatusBarStaysSingleLine(t *testing.T) {
 			Model:      "deepseek-v4-pro",
 			CWD:        "/Users/itwanger/Documents/GitHub/zcoder-go",
 			MaxContext: 1000000,
-		})
+		}, nil)
 		m.width = width
 		got := m.statusBar()
 		if h := lipgloss.Height(got); h != 1 {
@@ -141,7 +141,7 @@ func TestInputRows(t *testing.T) {
 }
 
 func TestInputBoxUsesFullWidth(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	m.width = 80
 	m.updateInputLayout()
 	got := m.inputBox()
@@ -186,7 +186,7 @@ func TestInputBoxUsesFullWidth(t *testing.T) {
 }
 
 func TestViewKeepsInputInsideTerminalFrame(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"})
+	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"}, nil)
 	m.width = 80
 	m.height = 24
 	m.updateInputLayout()
@@ -216,7 +216,7 @@ func TestViewKeepsInputInsideTerminalFrame(t *testing.T) {
 }
 
 func TestInputCursorPositionPointsToTextarea(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"})
+	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"}, nil)
 	m.width = 80
 	m.height = 24
 	m.input.SetValue("支持Plan-and-Execute吗?")
@@ -279,7 +279,7 @@ func TestTranscriptScrollbarAppearsWhenContentOverflows(t *testing.T) {
 }
 
 func overflowingTranscriptModel() model {
-	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"})
+	m := newModel(context.Background(), nil, Startup{Model: "deepseek-v4-pro"}, nil)
 	m.width = 80
 	m.height = 20
 	m.renderer = nil
@@ -334,7 +334,7 @@ func TestFormatEventContent(t *testing.T) {
 }
 
 func TestTranscriptRendersFullProcessAndAnswer(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	m.width = 100
 	m.renderer, _ = newMarkdownRenderer(96)
 	longAnswer := "## 答案\n\n" + strings.Repeat("- 很长的 Markdown 输出\n", 40)
@@ -371,7 +371,7 @@ func TestTranscriptRendersFullProcessAndAnswer(t *testing.T) {
 }
 
 func TestApplyStreamEventMergesDeltas(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	m.entries = nil
 	first := m.applyStreamEvent(agent.Event{Type: agent.EventThinkingDelta, Title: "Thinking #1", Content: "用户"})
 	second := m.applyStreamEvent(agent.Event{Type: agent.EventThinkingDelta, Title: "Thinking #1", Content: "打了个"})
@@ -404,7 +404,7 @@ func TestApplyStreamEventMergesDeltas(t *testing.T) {
 }
 
 func TestStreamDoneAppendsDraftAsFinalAnswer(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	m.entries = []entry{{Role: "user", Content: "你好"}}
 	m.answerDraft = "**你好**"
 
@@ -423,7 +423,7 @@ func TestStreamDoneAppendsDraftAsFinalAnswer(t *testing.T) {
 }
 
 func TestToolEventFlushesPendingThinkingLine(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	m.entries = nil
 	if got := m.applyStreamEvent(agent.Event{Type: agent.EventThinkingDelta, Title: "Thinking #1", Content: "先查询工具"}); got != "" {
 		t.Fatalf("partial thinking should stay buffered, got %q", got)
@@ -441,7 +441,7 @@ func TestToolEventFlushesPendingThinkingLine(t *testing.T) {
 }
 
 func TestAnswerMsgAppendsEventsBeforeAnswer(t *testing.T) {
-	m := newModel(context.Background(), nil, Startup{})
+	m := newModel(context.Background(), nil, Startup{}, nil)
 	updated, _ := m.Update(answerMsg{
 		Answer: "**done**",
 		Events: []agent.Event{{

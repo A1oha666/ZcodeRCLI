@@ -33,6 +33,8 @@ type Startup struct {
 type model struct {
 	ctx            context.Context
 	agent          *agent.Agent
+	clusterRun     ClusterRunFunc
+	cluster        *clusterPanel
 	startup        Startup
 	input          textarea.Model
 	transcriptView viewport.Model
@@ -77,9 +79,9 @@ type streamDoneMsg struct {
 
 type streamClosedMsg struct{}
 
-func Run(ctx context.Context, ag *agent.Agent, startup Startup) error {
+func Run(ctx context.Context, ag *agent.Agent, startup Startup, clusterRun ClusterRunFunc) error {
 	cursorStop := make(chan struct{})
-	m := newModel(ctx, ag, startup)
+	m := newModel(ctx, ag, startup, clusterRun)
 	m.cursorStop = cursorStop
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stdout))
 	_, err := p.Run()
@@ -87,7 +89,7 @@ func Run(ctx context.Context, ag *agent.Agent, startup Startup) error {
 	return err
 }
 
-func newModel(ctx context.Context, ag *agent.Agent, startup Startup) model {
+func newModel(ctx context.Context, ag *agent.Agent, startup Startup, clusterRun ClusterRunFunc) model {
 	input := textarea.New()
 	input.Placeholder = inputPlaceholder
 	input.Prompt = inputPrompt
@@ -112,6 +114,7 @@ func newModel(ctx context.Context, ag *agent.Agent, startup Startup) model {
 	m := model{
 		ctx:            ctx,
 		agent:          ag,
+		clusterRun:     clusterRun,
 		startup:        startup,
 		input:          input,
 		transcriptView: transcriptView,
@@ -179,6 +182,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			userEntry := entry{Role: "user", Content: text, Time: time.Now()}
 			m.entries = append(m.entries, userEntry)
+			if isClusterCommand(text) {
+				stream := make(chan tea.Msg, 256)
+				m.stream = stream
+				return m.startCluster(text, stream)
+			}
 			m.running = true
 			m.status = "running"
 			m.answerDraft = ""
@@ -192,6 +200,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastMouseEvent = time.Now()
 		m.transcriptView, cmd = m.transcriptView.Update(msg)
 		return m, tea.Batch(cmd, m.placeTerminalCursor())
+	case clusterEventMsg:
+		wasAtBottom := m.transcriptView.AtBottom()
+		m.applyClusterEvent(msg.Event)
+		m.syncTranscriptViewport(wasAtBottom)
+		return m, waitForStream(m.stream)
 	case streamEventMsg:
 		wasAtBottom := m.transcriptView.AtBottom()
 		m.applyStreamEvent(msg.Event)
@@ -199,6 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStream(m.stream)
 	case streamDoneMsg:
 		wasAtBottom := m.transcriptView.AtBottom()
+		m.finishCluster()
 		m.running = false
 		m.status = "idle"
 		m.stream = nil
@@ -649,6 +663,9 @@ func (m model) transcript() string {
 		}
 		b.WriteString(m.renderEntry(e))
 	}
+	if panel := m.renderClusterPanel(); panel != "" {
+		b.WriteString("\n\n" + panel)
+	}
 	return b.String()
 }
 
@@ -1016,6 +1033,7 @@ Zcoder commands:
 
 - /plan <task>  Run Plan-and-Execute
 - /team <task>  Run Multi-Agent workflow
+- /cluster [--agents N] [--concurrency N] [--simulate] <task>  Run an agent cluster with live progress
 - /help         Show this help
 - /exit         Quit
 

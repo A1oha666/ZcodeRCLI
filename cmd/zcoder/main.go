@@ -79,7 +79,7 @@ func rootCommand() *cobra.Command {
 				MCPReady:      env.MCPReady,
 				MCPTools:      env.MCPTools,
 				MaxContext:    env.Client.MaxContext(),
-			})
+			}, clusterRunFunc(env.Client))
 		},
 	}
 	cmd.Flags().StringVar(&once, "once", "", "run one prompt and exit")
@@ -306,6 +306,9 @@ func clusterCommand() *cobra.Command {
 	var simulate bool
 	var simDelayMs int
 	var workspaceDir string
+	var isolation string
+	var keepWorktrees bool
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "cluster [task]",
@@ -323,19 +326,22 @@ func clusterCommand() *cobra.Command {
 				client = env.Client
 			}
 			cl := cluster.New(cluster.Config{
-				Agents:       agents,
-				Concurrency:  concurrency,
-				Simulate:     simulate,
-				SimDelay:     time.Duration(simDelayMs) * time.Millisecond,
-				ProjectRoot:  mustCwd(),
-				WorkspaceDir: workspaceDir,
-			}, client, clusterPrinter())
+				Agents:        agents,
+				Concurrency:   concurrency,
+				Simulate:      simulate,
+				SimDelay:      time.Duration(simDelayMs) * time.Millisecond,
+				ProjectRoot:   mustCwd(),
+				WorkspaceDir:  workspaceDir,
+				Isolation:     isolation,
+				KeepWorktrees: keepWorktrees,
+			}, client, newClusterProgressPrinter(agents, verbose))
 			report, err := cl.Run(cmd.Context(), task)
+			fmt.Println()
 			if err != nil {
 				return err
 			}
 			stats := report.Stats
-			fmt.Printf("\n=== Stats ===\nagents: %d | succeeded: %d | failed: %d | peak concurrency: %d | total: %s\n",
+			fmt.Printf("=== Stats ===\nagents: %d | succeeded: %d | failed: %d | peak concurrency: %d | total: %s\n",
 				stats.Total, stats.Succeeded, stats.Failed, stats.PeakConcurrency, stats.Duration.Round(time.Millisecond))
 			fmt.Printf("sandboxes: %s\n", report.RunDir)
 			fmt.Println("\n=== Final Report ===")
@@ -347,25 +353,81 @@ func clusterCommand() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max agents running at the same time")
 	cmd.Flags().BoolVar(&simulate, "simulate", false, "run mock agents without real LLM calls")
 	cmd.Flags().IntVar(&simDelayMs, "sim-delay-ms", 0, "base simulated latency per mock LLM call")
-	cmd.Flags().StringVar(&workspaceDir, "workspace-dir", "", "base directory for agent sandboxes (default <cwd>/.zcoder/cluster)")
+	cmd.Flags().StringVar(&workspaceDir, "workspace-dir", "", "base directory for agent sandboxes (default auto)")
+	cmd.Flags().StringVar(&isolation, "isolation", "", "worker sandbox isolation: worktree, dir, or empty for auto")
+	cmd.Flags().BoolVar(&keepWorktrees, "keep-worktrees", false, "keep git worktree sandboxes after the run")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "print per-worker events instead of a single progress line")
 	return cmd
 }
 
-func clusterPrinter() cluster.Observer {
-	var mu sync.Mutex
+// newClusterProgressPrinter renders cluster activity as one in-place progress
+// line, or as per-worker event lines when verbose is set.
+func newClusterProgressPrinter(total int, verbose bool) cluster.Observer {
+	var (
+		mu      sync.Mutex
+		started = time.Now()
+		done    int
+		failed  int
+		running int
+	)
+	progress := func() cluster.Progress {
+		return cluster.Progress{
+			Total:   total,
+			Done:    done,
+			Failed:  failed,
+			Running: running,
+			Elapsed: time.Since(started),
+		}
+	}
+	emitLine := func(format string, args ...any) {
+		fmt.Printf(format+"\n", args...)
+	}
 	return func(ev cluster.Event) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch ev.Type {
-		case "plan":
-			fmt.Printf("[worker-%04d] subtask: %s\n", ev.Worker+1, ev.Content)
+		case "start":
+			running++
 		case "done":
-			fmt.Printf("[worker-%04d] %s\n", ev.Worker+1, ev.Content)
+			running--
+			done++
 		case "error":
-			fmt.Printf("[worker-%04d] error: %s\n", ev.Worker+1, ev.Content)
+			running--
+			failed++
 		case "info":
-			fmt.Printf("[cluster] %s\n", ev.Content)
+			fmt.Printf("\r\033[K[cluster] %s\n", ev.Content)
 		}
+		if verbose {
+			switch ev.Type {
+			case "plan":
+				emitLine("[worker-%04d] subtask: %s", ev.Worker+1, ev.Content)
+			case "start":
+				emitLine("[worker-%04d] started", ev.Worker+1)
+			case "done":
+				emitLine("[worker-%04d] %s", ev.Worker+1, ev.Content)
+			case "error":
+				emitLine("[worker-%04d] error: %s", ev.Worker+1, ev.Content)
+			}
+			return
+		}
+		fmt.Printf("\r\033[K[cluster] %s", progress().RenderBar(36))
+	}
+}
+// clusterRunFunc adapts the bootstrap environment into the runner the TUI
+// invokes for /cluster commands.
+func clusterRunFunc(client llm.Client) tui.ClusterRunFunc {
+	return func(ctx context.Context, opts cluster.CommandOptions, task string, observe cluster.Observer) (cluster.Report, error) {
+		var runClient llm.Client
+		if !opts.Simulate {
+			runClient = client
+		}
+		cl := cluster.New(cluster.Config{
+			Agents:      opts.Agents,
+			Concurrency: opts.Concurrency,
+			Simulate:    opts.Simulate,
+			ProjectRoot: mustCwd(),
+		}, runClient, observe)
+		return cl.Run(ctx, task)
 	}
 }
 

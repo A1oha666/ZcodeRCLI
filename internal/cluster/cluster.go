@@ -42,6 +42,13 @@ type Config struct {
 	Simulate bool
 	// Simulate-only: 1-based worker number that should fail its first turn; 0 = none fail.
 	FailWorker int
+	// Isolation selects the per-worker sandbox: "worktree" (default, git
+	// worktree per agent, requires a git repo), "dir" (plain subdirectory),
+	// or "" (auto: dir for simulate, worktree when the project is a git repo).
+	Isolation string
+	// KeepWorktrees skips worktree cleanup after the run so changes can be
+	// inspected or committed manually.
+	KeepWorktrees bool
 	// SimDelay is the base per-call latency injected by the mock client.
 	SimDelay time.Duration
 	// ProjectRoot is the workspace the cluster operates on.
@@ -141,10 +148,11 @@ func (c *Cluster) Run(ctx context.Context, task string) (Report, error) {
 	started := time.Now()
 	c.baseCfg = config.Load()
 
-	runDir, err := c.prepareRunDir()
+	sb, err := c.provision()
 	if err != nil {
 		return Report{}, err
 	}
+	defer sb.cleanup(c)
 
 	subtasks, err := c.decompose(ctx, task)
 	if err != nil {
@@ -154,7 +162,7 @@ func (c *Cluster) Run(ctx context.Context, task string) (Report, error) {
 		c.emit(Event{Worker: st.Index, Type: "plan", Content: st.Prompt})
 	}
 
-	stats := c.runWorkers(ctx, subtasks, runDir)
+	stats := c.runWorkers(ctx, subtasks, sb)
 
 	summary, aggErr := c.aggregate(ctx, task, stats)
 	if aggErr != nil {
@@ -168,23 +176,80 @@ func (c *Cluster) Run(ctx context.Context, task string) (Report, error) {
 		Subtasks: subtasks,
 		Summary:  summary,
 		Stats:    stats,
-		RunDir:   runDir,
+		RunDir:   sb.runDir,
 	}, nil
 }
 
-func (c *Cluster) prepareRunDir() (string, error) {
-	base := c.cfg.WorkspaceDir
-	if base == "" {
-		base = filepath.Join(c.cfg.ProjectRoot, ".zcoder", "cluster")
+// sandboxes describes where the workers of one run operate.
+type sandboxes struct {
+	runDir   string
+	worktree bool
+	pool     *worktreePool
+}
+
+// cleanup tears down worktrees after the run unless the caller asked to keep
+// them for manual inspection.
+func (s *sandboxes) cleanup(c *Cluster) {
+	if s.pool == nil {
+		return
 	}
+	if c.cfg.KeepWorktrees {
+		c.emit(Event{Type: "info", Content: "keeping worktrees under " + s.runDir})
+		return
+	}
+	s.pool.removeAll()
+}
+
+// resolveIsolation decides whether this run uses git worktree sandboxes.
+func (c *Cluster) resolveIsolation() bool {
+	switch strings.ToLower(strings.TrimSpace(c.cfg.Isolation)) {
+	case "dir":
+		return false
+	case "worktree":
+		if !IsGitRepo(c.cfg.ProjectRoot) {
+			c.emit(Event{Type: "info", Content: "project root is not a git repo; falling back to dir sandboxes"})
+			return false
+		}
+		return true
+	default: // auto
+		if c.cfg.Simulate {
+			// Simulated workers only write one mock file each; creating
+			// thousands of worktree checkouts would be pure overhead.
+			return false
+		}
+		return IsGitRepo(c.cfg.ProjectRoot)
+	}
+}
+
+// provision prepares the per-worker sandboxes for one run.
+func (c *Cluster) provision() (*sandboxes, error) {
+	isolate := c.resolveIsolation()
+	base := sandboxBaseFor(isolate, c.cfg.ProjectRoot, c.cfg.WorkspaceDir)
 	runDir := filepath.Join(base, time.Now().Format("20060102-150405"))
+
+	if isolate {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create run dir %s: %w", runDir, err)
+		}
+		pool := newWorktreePool(c.cfg.ProjectRoot)
+		for i := 0; i < c.cfg.Agents; i++ {
+			path := workerDir(runDir, i)
+			if err := pool.create(path); err != nil {
+				pool.removeAll()
+				return nil, fmt.Errorf("create worker worktree: %w", err)
+			}
+		}
+		c.emit(Event{Type: "info", Content: fmt.Sprintf("isolated %d workers in git worktrees under %s", c.cfg.Agents, runDir)})
+		return &sandboxes{runDir: runDir, worktree: true, pool: pool}, nil
+	}
+
 	for i := 0; i < c.cfg.Agents; i++ {
 		dir := workerDir(runDir, i)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", fmt.Errorf("create worker sandbox %s: %w", dir, err)
+			return nil, fmt.Errorf("create worker sandbox %s: %w", dir, err)
 		}
 	}
-	return runDir, nil
+	return &sandboxes{runDir: runDir}, nil
 }
 
 func workerDir(runDir string, index int) string {
@@ -253,7 +318,7 @@ func fallbackSubtasks(task string, n int) []string {
 	return out
 }
 
-func (c *Cluster) runWorkers(ctx context.Context, subtasks []SubTask, runDir string) Stats {
+func (c *Cluster) runWorkers(ctx context.Context, subtasks []SubTask, sb *sandboxes) Stats {
 	stats := Stats{Total: len(subtasks), Results: make([]WorkerResult, len(subtasks))}
 	var (
 		wg        sync.WaitGroup
@@ -280,7 +345,8 @@ func (c *Cluster) runWorkers(ctx context.Context, subtasks []SubTask, runDir str
 			}
 			defer inflight.Add(-1)
 
-			result := c.runWorker(ctx, st, runDir)
+			c.emit(Event{Worker: st.Index, Type: "start"})
+			result := c.runWorker(ctx, st, sb)
 			stats.Results[st.Index] = result
 			if result.Err != nil {
 				c.emit(Event{Worker: st.Index, Type: "error", Content: result.Err.Error()})
@@ -297,13 +363,12 @@ func (c *Cluster) runWorkers(ctx context.Context, subtasks []SubTask, runDir str
 	return stats
 }
 
-func (c *Cluster) runWorker(ctx context.Context, st SubTask, runDir string) (result WorkerResult) {
+func (c *Cluster) runWorker(ctx context.Context, st SubTask, sb *sandboxes) (result WorkerResult) {
 	result = WorkerResult{Index: st.Index, Prompt: st.Prompt}
 	started := time.Now()
 	defer func() { result.Duration = time.Since(started) }()
 
-	sandbox := workerDir(runDir, st.Index)
-	registry := tools.NewRegistry(sandbox, tools.Options{Config: c.baseCfg})
+	registry := tools.NewRegistry(workerDir(sb.runDir, st.Index), tools.Options{Config: c.baseCfg})
 	defer registry.Close()
 
 	worker := agent.New(c.clientFor(st.Index), registry, nil, nil)
