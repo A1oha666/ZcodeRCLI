@@ -2,8 +2,6 @@
 
 Zcoder Go 是一个运行在终端里的 AI Agent CLI，面向真实项目开发场景：读写文件、搜索代码、执行命令、联网检索、调用 MCP 工具、加载 Skill、保存记忆、生成快照、恢复现场，并通过 Runtime API 对外提供 threads、turns 和 events 能力。
 
-这个仓库是 Zcoder 的 Go 版本。它参考 Java 版 Zcoder 的完整 Agent CLI 能力，也参考 Python 版 Zcoder 的产品化定位：不是一个只会聊天的空壳 Demo，而是按真实终端优先的开发助手来做，核心路径有测试覆盖，并经过本地 CLI smoke 验证。
-
 ## 功能特性
 
 - ReAct Agent 循环与 OpenAI-compatible tool calling
@@ -16,7 +14,6 @@ Zcoder Go 是一个运行在终端里的 AI Agent CLI，面向真实项目开发
 - MCP stdio/HTTP 基础握手、`tools/list`、动态工具注册和调用
 - Plan-and-Execute、Multi-Agent 编排入口
 - Runtime API：threads、turns、events
-- 微信 iLink 通道命令、账号状态、文本格式化与安全策略骨架
 - PathGuard、CommandGuard、危险操作审计日志、快照/恢复基础能力
 
 ## 环境要求
@@ -110,7 +107,3 @@ Runtime API 可以通过以下命令启动：
 go run ./cmd/zcoder serve --port 8080
 ```
 
-它提供线程、turn 和事件能力，便于把 Zcoder Go 接入外部编排系统或后台任务。
-创建 turn 时可以传入 `mode` 字段选择 `react`、`plan` 或 `team`，不传则会按输入前缀自动识别 `/plan` 和 `/team`。
-
-更多 Java parity 记录见 [docs/parity.md](docs/parity.md)。
