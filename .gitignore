@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+
+.zcoder/
+
+/zcoder
+/zcoder-go
+*.test
+*.out
+coverage.txt
+
+.DS_Store
