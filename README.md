@@ -13,6 +13,7 @@ Zcoder Go 是一个运行在终端里的 AI Agent CLI，面向真实项目开发
 - Skill 三层扫描、frontmatter 解析、启用状态管理和 `load_skill` 延迟注入
 - MCP stdio/HTTP 基础握手、`tools/list`、动态工具注册和调用
 - Plan-and-Execute、Multi-Agent 编排入口
+- Agent 集群：几十到上千个 agent 并发 coding，git worktree 隔离、限流调度、分段进度条
 - Runtime API：threads、turns、events
 - PathGuard、CommandGuard、危险操作审计日志、快照/恢复基础能力
 
@@ -39,6 +40,7 @@ go run ./cmd/zcoder
 go run ./cmd/zcoder --plain
 go run ./cmd/zcoder index .
 go run ./cmd/zcoder search "Agent"
+go run ./cmd/zcoder cluster --agents 8 "给 README 提出改进建议"
 go run ./cmd/zcoder serve --port 8080
 go run ./cmd/zcoder wechat status
 ```
@@ -67,11 +69,45 @@ export SEARXNG_BASE_URL=http://localhost:8080
 /exit
 /plan <task>
 /team <task>
+/cluster [--agents N] [--concurrency N] [--simulate] <task>
 ```
 
 `--once` 和 `--plain` 也支持 `/plan <task>`、`/team <task>` 前缀；脚本化调用时也可以通过 `--mode plan` 或 `--mode team` 显式选择执行模式。
 
 更多命令会随着 Java/Python 版本能力对齐逐步补齐。
+
+## Agent 集群
+
+集群把一个任务拆成 N 个子任务，交给并发 worker 池同时执行，最后汇总成一份报告。利用 Go 的并发能力支持几十到上千个 agent 同时 coding（单机进程内 demo 级实现，不做分布式）。
+
+```bash
+# 模拟模式：无需 API key，体验完整调度链路
+go run ./cmd/zcoder cluster --agents 200 --concurrency 50 --simulate "给项目补充单元测试"
+
+# 真实模式：每个 agent 发起真实的 LLM 调用
+go run ./cmd/zcoder cluster --agents 4 "给 README 提出四条不同角度的改进建议"
+```
+
+工作流程：
+
+1. **Coordinator**：一次 LLM 调用把任务拆成 N 个子任务（解析失败自动降级为按视角切分）
+2. **Worker Pool**：goroutine 池 + 信号量限流（`--concurrency`，默认 8），每个 worker 运行完整的 ReAct 循环并调用真实工具
+3. **Aggregator**：最后一次 LLM 调用合并 worker 产出（最多采样 20 份，防上下文溢出）
+
+隔离与沙箱：
+
+- 真实模式下每个 worker 在独立的 **git worktree**（detached HEAD）中工作，存放在 `~/.zcoder/cluster/<runID>/`，互不冲突
+- 运行结束后 worktree 默认自动回收；`--keep-worktrees` 可保留改动供人工检查或手动合并（集群不会自动 commit/merge 回主分支）
+- 非 git 目录自动降级为普通目录沙箱；`--simulate` 模式使用轻量目录沙箱
+- `--isolation worktree|dir` 可显式指定隔离方式
+
+进度展示：
+
+- CLI 默认单行原地刷新分段进度条：绿█完成、红█失败、黄▒运行中、暗░排队，附完成/失败/运行计数
+- `--verbose` 恢复逐 worker 明细输出
+- TUI 中输入 `/cluster ...` 可看到带边框的实时进度面板（彩色进度条 + 最近 worker 事件）
+
+单个 worker 失败不会中止集群，错误会记录在统计和报告中。
 
 ## 内置工具
 
