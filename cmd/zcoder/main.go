@@ -8,12 +8,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/itwanger/zcoder-go/internal/agent"
+	"github.com/itwanger/zcoder-go/internal/cluster"
 	"github.com/itwanger/zcoder-go/internal/config"
 	"github.com/itwanger/zcoder-go/internal/llm"
 	"github.com/itwanger/zcoder-go/internal/rag"
@@ -85,7 +87,7 @@ func rootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cwd, "cwd", "", "workspace directory")
 	cmd.Flags().StringVar(&mode, "mode", "", "run mode for --once or --plain: react, plan, team")
 	cmd.AddCommand(versionCommand(), doctorCommand(), indexCommand(), searchCommand(), graphCommand(),
-		serveCommand(), wechatCommand(), snapshotCommand())
+		serveCommand(), wechatCommand(), snapshotCommand(), clusterCommand())
 	return cmd
 }
 
@@ -296,6 +298,75 @@ func serveCommand() *cobra.Command {
 	}
 	cmd.Flags().IntVar(&port, "port", 8080, "listen port")
 	return cmd
+}
+
+func clusterCommand() *cobra.Command {
+	var agents int
+	var concurrency int
+	var simulate bool
+	var simDelayMs int
+	var workspaceDir string
+
+	cmd := &cobra.Command{
+		Use:   "cluster [task]",
+		Short: "run a concurrent agent cluster on one task",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			task := strings.Join(args, " ")
+			var client llm.Client
+			if !simulate {
+				env, err := bootstrap(cmd.Context())
+				if err != nil {
+					return err
+				}
+				defer env.Close()
+				client = env.Client
+			}
+			cl := cluster.New(cluster.Config{
+				Agents:       agents,
+				Concurrency:  concurrency,
+				Simulate:     simulate,
+				SimDelay:     time.Duration(simDelayMs) * time.Millisecond,
+				ProjectRoot:  mustCwd(),
+				WorkspaceDir: workspaceDir,
+			}, client, clusterPrinter())
+			report, err := cl.Run(cmd.Context(), task)
+			if err != nil {
+				return err
+			}
+			stats := report.Stats
+			fmt.Printf("\n=== Stats ===\nagents: %d | succeeded: %d | failed: %d | peak concurrency: %d | total: %s\n",
+				stats.Total, stats.Succeeded, stats.Failed, stats.PeakConcurrency, stats.Duration.Round(time.Millisecond))
+			fmt.Printf("sandboxes: %s\n", report.RunDir)
+			fmt.Println("\n=== Final Report ===")
+			fmt.Println(report.Summary)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&agents, "agents", 8, "number of agents in the cluster")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max agents running at the same time")
+	cmd.Flags().BoolVar(&simulate, "simulate", false, "run mock agents without real LLM calls")
+	cmd.Flags().IntVar(&simDelayMs, "sim-delay-ms", 0, "base simulated latency per mock LLM call")
+	cmd.Flags().StringVar(&workspaceDir, "workspace-dir", "", "base directory for agent sandboxes (default <cwd>/.zcoder/cluster)")
+	return cmd
+}
+
+func clusterPrinter() cluster.Observer {
+	var mu sync.Mutex
+	return func(ev cluster.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch ev.Type {
+		case "plan":
+			fmt.Printf("[worker-%04d] subtask: %s\n", ev.Worker+1, ev.Content)
+		case "done":
+			fmt.Printf("[worker-%04d] %s\n", ev.Worker+1, ev.Content)
+		case "error":
+			fmt.Printf("[worker-%04d] error: %s\n", ev.Worker+1, ev.Content)
+		case "info":
+			fmt.Printf("[cluster] %s\n", ev.Content)
+		}
+	}
 }
 
 func wechatCommand() *cobra.Command {
