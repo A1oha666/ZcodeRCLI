@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/itwanger/zcoder-go/internal/cluster"
 )
@@ -63,7 +62,7 @@ func (m *model) startCluster(text string, stream chan tea.Msg) (tea.Model, tea.C
 	m.status = "running"
 	m.resetThinkingBuffer()
 	m.syncTranscriptViewport(true)
-	return m, tea.Batch(m.runCluster(opts, task, stream), waitForStream(stream), m.placeTerminalCursor())
+	return m, tea.Batch(m.runCluster(opts, task, stream), waitForStream(stream), m.spinner.Tick, m.placeTerminalCursor())
 }
 
 func (m model) runCluster(opts cluster.CommandOptions, task string, stream chan<- tea.Msg) tea.Cmd {
@@ -102,11 +101,15 @@ func (m *model) applyClusterEvent(ev cluster.Event) {
 	case "done":
 		p.running--
 		p.done++
+		p.pushRecent(clusterDoneStyle.Render(fmt.Sprintf("#%d ✓", ev.Worker+1)) + " " + mutedStyle.Render(ev.Content))
 	case "error":
 		p.running--
 		p.failed++
+		p.pushRecent(clusterFailedStyle.Render(fmt.Sprintf("#%d ✗", ev.Worker+1)) + " " + mutedStyle.Render(truncateMiddle(ev.Content, 60)))
+	case "plan":
+		p.pushRecent(mutedStyle.Render(fmt.Sprintf("#%d", ev.Worker+1)) + " " + ev.Content)
 	case "info":
-		p.pushRecent("[cluster] " + ev.Content)
+		p.pushRecent(mutedStyle.Render("· " + ev.Content))
 	}
 }
 
@@ -131,8 +134,8 @@ func (m model) renderClusterPanel() string {
 	if p == nil {
 		return ""
 	}
-	width := max(40, m.width-4)
-	barWidth := max(10, width-44)
+	width := max(40, m.width-6)
+	barWidth := max(10, width-4)
 	snapshot := cluster.Progress{
 		Total:   p.total,
 		Done:    p.done,
@@ -142,14 +145,17 @@ func (m model) renderClusterPanel() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(sectionStyle.Render("Agent Cluster") + " " + mutedStyle.Render(p.task) + "\n")
+	b.WriteString(brandStyle.Render("◆ Agent Cluster") + " " + mutedStyle.Render(truncateMiddle(p.task, max(10, width-20))) + "\n")
 	b.WriteString(m.renderClusterBar(snapshot, barWidth) + "\n")
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("%d/%d done · %d failed · %d running · %s elapsed",
-		p.done, p.total, p.failed, p.running, snapshot.Elapsed.Round(time.Second))))
+	stats := clusterDoneStyle.Render(fmt.Sprintf("✓ %d", p.done)) + faintStyle.Render("/") + mutedStyle.Render(fmt.Sprintf("%d", p.total))
+	stats += faintStyle.Render("  ·  ") + clusterFailedStyle.Render(fmt.Sprintf("✗ %d", p.failed))
+	stats += faintStyle.Render("  ·  ") + clusterRunningStyle.Render(fmt.Sprintf("▶ %d", p.running))
+	stats += faintStyle.Render("  ·  ") + mutedStyle.Render(snapshot.Elapsed.Round(time.Second).String())
+	b.WriteString(stats)
 	if len(p.recent) > 0 {
-		b.WriteString("\n" + mutedStyle.Render(strings.Join(p.recent, "\n")))
+		b.WriteString("\n\n" + strings.Join(p.recent, "\n"))
 	}
-	return clusterPanelStyle.Render(b.String())
+	return clusterPanelStyle.Width(width).Render(b.String())
 }
 
 // renderClusterBar colors the proportional bar segments: green for done,
@@ -161,11 +167,3 @@ func (m model) renderClusterBar(p cluster.Progress, width int) string {
 		clusterRunningStyle.Render(strings.Repeat("▒", running)) +
 		clusterEmptyStyle.Render(strings.Repeat("░", empty))
 }
-
-var (
-	clusterPanelStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("60")).Padding(0, 1)
-	clusterDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("67"))
-	clusterFailedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	clusterRunningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
-	clusterEmptyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("103"))
-)

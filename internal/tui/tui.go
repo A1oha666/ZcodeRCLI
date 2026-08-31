@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +38,8 @@ type model struct {
 	cluster        *clusterPanel
 	startup        Startup
 	input          textarea.Model
+	spinner        spinner.Model
+	runStarted     time.Time
 	transcriptView viewport.Model
 	lastMouseEvent time.Time
 	cursorStop     <-chan struct{}
@@ -107,6 +110,7 @@ func newModel(ctx context.Context, ag *agent.Agent, startup Startup, clusterRun 
 	input.SetWidth(80)
 	input.SetHeight(1)
 	input.Focus()
+	sp := spinner.New(spinner.WithSpinner(spinner.Points), spinner.WithStyle(lipgloss.NewStyle().Foreground(colorWarn)))
 	transcriptView := viewport.New(79, 20)
 	transcriptView.MouseWheelEnabled = true
 	transcriptView.MouseWheelDelta = 3
@@ -117,6 +121,7 @@ func newModel(ctx context.Context, ag *agent.Agent, startup Startup, clusterRun 
 		clusterRun:     clusterRun,
 		startup:        startup,
 		input:          input,
+		spinner:        sp,
 		transcriptView: transcriptView,
 		width:          100,
 		height:         30,
@@ -125,7 +130,7 @@ func newModel(ctx context.Context, ag *agent.Agent, startup Startup, clusterRun 
 		renderer:       renderer,
 		entries: []entry{{
 			Role:    "assistant",
-			Content: "你好！我是 Zcoder Go，可以帮你处理代码、工具调用、搜索、MCP、Skill、RAG 和多 Agent 任务。",
+			Content: welcomeMessage(),
 			Time:    time.Now(),
 		}},
 	}
@@ -182,6 +187,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			userEntry := entry{Role: "user", Content: text, Time: time.Now()}
 			m.entries = append(m.entries, userEntry)
+			m.runStarted = time.Now()
 			if isClusterCommand(text) {
 				stream := make(chan tea.Msg, 256)
 				m.stream = stream
@@ -194,12 +200,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncTranscriptViewport(true)
 			stream := make(chan tea.Msg, 256)
 			m.stream = stream
-			return m, tea.Batch(m.runPrompt(text, stream), waitForStream(stream), m.placeTerminalCursor())
+			return m, tea.Batch(m.runPrompt(text, stream), waitForStream(stream), m.spinner.Tick, m.placeTerminalCursor())
 		}
 	case tea.MouseMsg:
 		m.lastMouseEvent = time.Now()
 		m.transcriptView, cmd = m.transcriptView.Update(msg)
 		return m, tea.Batch(cmd, m.placeTerminalCursor())
+	case spinner.TickMsg:
+		if m.running {
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	case clusterEventMsg:
 		wasAtBottom := m.transcriptView.AtBottom()
 		m.applyClusterEvent(msg.Event)
@@ -310,29 +322,28 @@ func waitForStream(stream <-chan tea.Msg) tea.Cmd {
 
 func (m model) View() string {
 	input := m.inputBox()
-	gap := m.inputStatusGap()
 	status := m.statusBar()
 	banner := m.banner()
 	height := max(8, m.height)
-	transcriptHeight := m.resolvedTranscriptHeight(banner, input, gap, status, height)
+	transcriptHeight := m.resolvedTranscriptHeight(banner, input, status, height)
 	transcript := m.renderTranscriptViewport(transcriptHeight)
-	view := renderFrame(banner, transcript, input, gap, status)
+	view := renderFrame(banner, transcript, input, status)
 	return view
 }
 
-func renderFrame(banner, transcript, input, gap, status string) string {
-	return strings.Join([]string{banner, transcript, input, gap, status}, "\n")
+func renderFrame(banner, transcript, input, status string) string {
+	return strings.Join([]string{banner, transcript, input, status}, "\n")
 }
 
-func (m model) transcriptHeight(banner, input, gap, status string, terminalHeight int) int {
-	fixedHeight := lipgloss.Height(banner) + lipgloss.Height(input) + lipgloss.Height(gap) + lipgloss.Height(status) + 4
+func (m model) transcriptHeight(banner, input, status string, terminalHeight int) int {
+	fixedHeight := lipgloss.Height(banner) + lipgloss.Height(input) + lipgloss.Height(status) + 4
 	return max(1, terminalHeight-fixedHeight)
 }
 
-func (m model) resolvedTranscriptHeight(banner, input, gap, status string, terminalHeight int) int {
-	height := m.transcriptHeight(banner, input, gap, status, terminalHeight)
+func (m model) resolvedTranscriptHeight(banner, input, status string, terminalHeight int) int {
+	height := m.transcriptHeight(banner, input, status, terminalHeight)
 	transcript := m.renderTranscriptViewport(height)
-	view := renderFrame(banner, transcript, input, gap, status)
+	view := renderFrame(banner, transcript, input, status)
 	if delta := terminalHeight - lipgloss.Height(view); delta != 0 {
 		height = max(1, height+delta)
 	}
@@ -342,9 +353,8 @@ func (m model) resolvedTranscriptHeight(banner, input, gap, status string, termi
 func (m *model) syncTranscriptViewport(stickToBottom bool) {
 	banner := m.banner()
 	input := m.inputBox()
-	gap := m.inputStatusGap()
 	status := m.statusBar()
-	height := m.resolvedTranscriptHeight(banner, input, gap, status, max(8, m.height))
+	height := m.resolvedTranscriptHeight(banner, input, status, max(8, m.height))
 	width := max(1, max(40, m.width)-scrollbarWidth)
 	m.transcriptView.Width = width
 	m.transcriptView.Height = height
@@ -430,27 +440,77 @@ func (m *model) handleTranscriptScrollKey(msg tea.KeyMsg) bool {
 	return true
 }
 
+// banner renders the ZCODER block-letter logo (Z in brand indigo, CODER in
+// cyan) with the version right-aligned on its last row, plus the model /
+// MCP / skill status chips underneath. Narrow terminals fall back to a
+// one-line wordmark.
 func (m model) banner() string {
-	left := logoStyle.Render(strings.Join([]string{
-		"██████████",
-		"█        █",
-		"█ >_     █",
-		"█        █",
-		"██████████",
-	}, "\n"))
-	info := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("ZcodeR")+" "+mutedStyle.Render(m.startup.Version),
-		mutedStyle.Render(displayModelName(m.startup.Model)),
-		boldStyle.Render("MCP")+" "+mutedStyle.Render(fmt.Sprintf("%d ready · %d tools", m.startup.MCPReady, m.startup.MCPTools)),
-		boldStyle.Render("Skill")+" "+mutedStyle.Render(fmt.Sprintf("%d/%d enabled", m.startup.SkillsEnabled, m.startup.SkillsTotal)),
-	)
-	panelWidth := max(40, m.width-lipgloss.Width(left)-lipgloss.Width(info)-8)
-	panel := panelStyle.Width(panelWidth).Render(
-		sectionStyle.Render("What's ready") + "\n" +
-			"- ReAct · Plan · Multi-Agent\n" +
-			"- grep · RAG · Web · MCP · Skill\n" +
-			"- /cluster - an experiment function")
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", info, "  ", panel)
+	meta := make([]string, 0, 4)
+	if name := displayModelName(m.startup.Model); name != "" {
+		meta = append(meta, modelStyle.Render(name))
+	}
+	meta = append(meta, mutedStyle.Render(fmt.Sprintf("MCP %d/%d", m.startup.MCPReady, m.startup.MCPTools)))
+	meta = append(meta, mutedStyle.Render(fmt.Sprintf("Skills %d/%d", m.startup.SkillsEnabled, m.startup.SkillsTotal)))
+	metaLine := "  " + strings.Join(meta, faintStyle.Render("  ·  "))
+
+	width := max(40, m.width)
+	if width < asciiLogoMinWidth {
+		brand := brandStyle.Render("Z") + toolCallHeaderStyle.Render("CODER")
+		if v := strings.TrimSpace(m.startup.Version); v != "" {
+			brand += " " + faintStyle.Render(v)
+		}
+		return brand + "\n" + metaLine
+	}
+
+	rows := asciiLogoRows()
+	if v := strings.TrimSpace(m.startup.Version); v != "" {
+		version := faintStyle.Render(v)
+		last := len(rows) - 1
+		if gap := width - asciiLogoWidth - lipgloss.Width(version) - 2; gap > 0 {
+			rows[last] += strings.Repeat(" ", gap) + version
+		}
+	}
+	return strings.Join(rows, "\n") + "\n" + metaLine
+}
+
+const asciiLogoMinWidth = 58
+
+const asciiLogoWidth = 52
+
+// asciiLogoRows renders the ZCODER wordmark: Z in brand indigo, CODER in
+// cyan.
+func asciiLogoRows() []string {
+	z := []string{
+		"███████╗",
+		"╚═══██╔╝",
+		"  ███╔╝ ",
+		" ██╔╝   ",
+		"███████╗",
+		"╚══════╝",
+	}
+	rest := []string{
+		" █████╗ █████╗ █████╗ ███████╗██████╗",
+		"██╔═══╝██╔══██╗██╔══██╗██╔═══╝██╔══██╗",
+		"██║    ██║  ██║██║  ██║█████╗ ██████╔╝",
+		"██║    ██║  ██║██║  ██║██╔══╝ ██╔══██╗",
+		"╚█████╗╚█████╔╝█████╔╝ ███████╗██║  ██║",
+		" ╚════╝ ╚════╝ ╚════╝  ╚══════╝╚═╝  ╚═╝",
+	}
+	rows := make([]string, len(z))
+	for i := range z {
+		rows[i] = brandStyle.Render(z[i]) + toolCallHeaderStyle.Render(rest[i])
+	}
+	return rows
+}
+
+func welcomeMessage() string {
+	return "你好！我是 **ZcodeR**，你的终端 AI 编程助手。\n\n" +
+		"我可以读写代码、执行命令、搜索代码库、联网检索，也支持多 Agent 协作。\n\n" +
+		"常用命令：\n\n" +
+		"- `/plan` — 先规划后执行复杂任务\n" +
+		"- `/team` — 多 Agent 协作\n" +
+		"- `/cluster` — 并发 Agent 集群（实验性）\n" +
+		"- `/help` — 查看全部命令"
 }
 
 func (m *model) updateInputLayout() {
@@ -483,10 +543,6 @@ func (m model) inputBox() string {
 
 func inputPaddingLine(width int) string {
 	return inputFillStyle.Render(strings.Repeat(" ", width))
-}
-
-func (m model) inputStatusGap() string {
-	return strings.Repeat(" ", max(40, m.width))
 }
 
 func (m model) placeTerminalCursor() tea.Cmd {
@@ -601,6 +657,8 @@ func inputRows(value string, width int) int {
 	return rows
 }
 
+// newMarkdownRenderer is kept for tests that exercise renderer lifecycle.
+// Assistant answers are rendered by renderAssistantMarkdown.
 func newMarkdownRenderer(width int) (*glamour.TermRenderer, error) {
 	return glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(width))
 }
@@ -663,30 +721,34 @@ func (m model) transcript() string {
 		}
 		b.WriteString(m.renderEntry(e))
 	}
-	if panel := m.renderClusterPanel(); panel != "" {
+	panel := m.renderClusterPanel()
+	if panel != "" {
 		b.WriteString("\n\n" + panel)
+	}
+	if len(m.entries) == 0 && panel == "" {
+		b.WriteString(faintStyle.Render("暂无对话记录，输入消息开始对话，/help 查看命令。"))
 	}
 	return b.String()
 }
 
 func (m model) renderEntry(e entry) string {
+	width := max(40, m.width-scrollbarWidth-2)
 	switch e.Role {
 	case "user":
-		return userStyle.Width(max(40, m.width-2)).Render("> " + e.Content)
+		stamp := timeStyle.Render(e.Time.Format("15:04"))
+		return userStyle.Width(width).Render("❯ "+e.Content) + " " + stamp
 	case "error":
-		return errorStyle.Render("Error: " + e.Content)
+		return errorStyle.Render("✗ " + e.Content)
 	case string(agent.EventThinking):
-		return thinkingEntryStyle.Width(max(40, m.width-2)).Render(e.Content)
+		return thinkingEntryStyle.Width(width).Render(e.Content)
 	case string(agent.EventToolCall):
-		return toolCallEntryStyle.Width(max(40, m.width-2)).Render(e.Content)
+		return toolCallEntryStyle.Width(width).Render(e.Content)
 	case string(agent.EventToolResult):
-		return toolResultEntryStyle.Width(max(40, m.width-2)).Render(e.Content)
+		return toolResultEntryStyle.Width(width).Render(e.Content)
 	default:
 		content := e.Content
 		if m.renderer != nil {
-			if rendered, err := m.renderer.Render(content); err == nil {
-				content = strings.TrimRight(rendered, "\n")
-			}
+			content = renderAssistantMarkdown(content, max(40, m.width-scrollbarWidth-4))
 		}
 		return assistantStyle.Render(content)
 	}
@@ -699,7 +761,7 @@ func (m *model) applyStreamEvent(ev agent.Event) string {
 		if title == "" {
 			title = "Thinking"
 		}
-		m.appendStreamDelta(string(agent.EventThinking), sectionStyle.Render(title)+"\n", ev.Content)
+		m.appendStreamDelta(string(agent.EventThinking), thinkingHeaderStyle.Render(title)+"\n", ev.Content)
 		return m.appendThinkingLine(title, ev.Content)
 	case agent.EventAnswerDelta:
 		if strings.TrimSpace(ev.Content) == "" {
@@ -780,7 +842,7 @@ func (m *model) renderThinkingLine(line string) string {
 		if title == "" {
 			title = "Thinking"
 		}
-		content = sectionStyle.Render(title) + "\n" + line
+		content = thinkingHeaderStyle.Render(title) + "\n" + line
 		m.thinkingHeader = true
 	}
 	return thinkingEntryStyle.Render(content)
@@ -853,17 +915,17 @@ func formatEventContent(ev agent.Event) string {
 		if title == "" {
 			title = "Thinking"
 		}
-		return sectionStyle.Render(title) + "\n" + content
+		return thinkingHeaderStyle.Render(title) + "\n" + content
 	case agent.EventToolCall:
 		if title == "" {
 			title = "tool"
 		}
-		return toolCallHeaderStyle.Render("Tool use: "+title) + "\n" + content
+		return toolCallHeaderStyle.Render("$ "+title) + "\n" + content
 	case agent.EventToolResult:
 		if title == "" {
 			title = "tool"
 		}
-		return toolResultHeaderStyle.Render("Tool result: "+title) + "\n" + content
+		return toolResultHeaderStyle.Render("← "+title) + "\n" + content
 	default:
 		if title == "" {
 			return content
@@ -880,13 +942,24 @@ func (m model) statusBar() string {
 		ctxMax = 128000
 	}
 	modelName := displayModelName(m.startup.Model)
-	left := modeStyle.Render(m.mode)
+	left := " " + modeStyle.Render(m.mode)
 	if modelName != "" {
 		left += " " + modelStyle.Render(modelName)
 	}
+	if m.running {
+		elapsed := ""
+		if !m.runStarted.IsZero() {
+			elapsed = " · " + time.Since(m.runStarted).Round(time.Second).String()
+		}
+		hint := ""
+		if m.status == "cancel requested" {
+			hint = " · 正在取消"
+		}
+		left += "  " + m.spinner.View() + " " + okStyle.Render("思考中") + mutedStyle.Render(elapsed+hint)
+	}
 	rightMax := max(0, width-lipgloss.Width(left)-1)
 	right := m.statusRight(ctxUsed, ctxMax, rightMax)
-	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 1
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
@@ -894,7 +967,7 @@ func (m model) statusBar() string {
 	if lipgloss.Width(line) > width {
 		line = xansi.Truncate(line, width, "")
 	}
-	return statusStyle.Render(line)
+	return faintStyle.Render(line)
 }
 
 func (m model) statusRight(ctxUsed, ctxMax, width int) string {
@@ -997,7 +1070,7 @@ func progressBar(used, window, width int) string {
 		filled = width
 	}
 	return progressFillStyle.Render(strings.Repeat("█", filled)) +
-		progressEmptyStyle.Render(strings.Repeat(" ", width-filled))
+		progressEmptyStyle.Render(strings.Repeat("░", width-filled))
 }
 
 func compactTokenCount(n int) string {
@@ -1047,61 +1120,163 @@ CLI commands outside the TUI:
 `)
 }
 
-const (
-	inputPrompt        = "* "
-	inputPlaceholder   = "Type your message or @path/to/file"
-	inputPaddingTop    = 1
-	inputPaddingBottom = 1
-	maxInputRows       = 4
-	scrollbarWidth     = 1
-)
+// renderAssistantMarkdown renders model output as clean plain text: fenced
+// code blocks are kept verbatim and indented, list markers become bullets,
+// emphasis markers are stripped, and everything is word-wrapped by display
+// width. Glamour was dropped here because its colorless style drops list
+// bullets and its default theme paints inline code red (our error color).
+func renderAssistantMarkdown(content string, width int) string {
+	if width < 20 {
+		width = 20
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	var out []string
+	inCode := false
+	pendingBlank := false
+	prevList := false
+	flushBlank := func() {
+		if pendingBlank && len(out) > 0 {
+			out = append(out, "")
+		}
+		pendingBlank = false
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			flushBlank()
+			out = append(out, "  "+line)
+			continue
+		}
+		if trimmed == "" {
+			pendingBlank = true
+			prevList = false
+			continue
+		}
+		if isHorizontalRule(trimmed) {
+			flushBlank()
+			prevList = false
+			out = append(out, faintStyle.Render(strings.Repeat("─", min(width, 40))))
+			continue
+		}
+		indent, body, ordered, isList := splitListMarker(line)
+		if isList && !pendingBlank && !prevList && len(out) > 0 {
+			// Visual separator between a paragraph and the list that follows it.
+			out = append(out, "")
+		}
+		flushBlank()
+		prevList = isList
+		body = stripMarkdownEmphasis(body)
+		prefix := indent
+		if isList {
+			if ordered {
+				prefix += body[:strings.IndexByte(body, ' ')] + " "
+				body = body[strings.IndexByte(body, ' ')+1:]
+			} else {
+				prefix += "• "
+			}
+		}
+		out = append(out, wrapMarkdownLine(prefix, body, width)...)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n ")
+}
+
+func isHorizontalRule(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	for _, r := range s {
+		if r != '-' && r != '*' && r != '_' && r != ' ' {
+			return false
+		}
+	}
+	return strings.ContainsAny(s, "- *_")
+}
+
+// splitListMarker detects markdown list items and returns the leading indent,
+// the item body, whether it is ordered, and whether it is a list item at all.
+func splitListMarker(line string) (indent, body string, ordered, ok bool) {
+	i := 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	indent = line[:i]
+	rest := line[i:]
+	if len(rest) >= 2 && (rest[0] == '-' || rest[0] == '*' || rest[0] == '+') && rest[1] == ' ' {
+		return indent, rest[2:], false, true
+	}
+	j := 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
+	}
+	if j > 0 && j+1 < len(rest) && rest[j] == '.' && rest[j+1] == ' ' {
+		return indent, rest, true, true
+	}
+	return "", line, false, false
+}
+
+// stripMarkdownEmphasis removes inline formatting markers, keeping the text.
+func stripMarkdownEmphasis(s string) string {
+	s = inlineCodeRE.ReplaceAllString(s, "$1")
+	s = markdownLinkRE.ReplaceAllString(s, "$1")
+	for _, marker := range []string{"**", "__", "~~"} {
+		s = strings.ReplaceAll(s, marker, "")
+	}
+	var b strings.Builder
+	runes := []rune(s)
+	for i, r := range runes {
+		if (r == '*' || r == '_') && (i == 0 || runes[i-1] == ' ' || runes[i-1] == '（' || runes[i-1] == '(') {
+			continue
+		}
+		if (r == '*' || r == '_') && i == len(runes)-1 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// wrapMarkdownLine wraps body by display width; continuation lines align
+// under the text start of the first line.
+func wrapMarkdownLine(prefix, body string, width int) []string {
+	prefixWidth := lipgloss.Width(prefix)
+	words := strings.Fields(body)
+	if len(words) == 0 {
+		return []string{strings.TrimRight(prefix, " ")}
+	}
+	indent := strings.Repeat(" ", prefixWidth)
+	lines := make([]string, 0, 2)
+	cur := prefix + words[0]
+	curWidth := prefixWidth + lipgloss.Width(words[0])
+	for _, w := range words[1:] {
+		wWidth := lipgloss.Width(w)
+		if curWidth+1+wWidth > width && lipgloss.Width(strings.TrimSpace(cur)) > 0 {
+			lines = append(lines, cur)
+			cur = indent + w
+			curWidth = prefixWidth + wWidth
+			continue
+		}
+		cur += " " + w
+		curWidth += 1 + wWidth
+	}
+	lines = append(lines, cur)
+	return lines
+}
 
 var (
-	logoStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
-	titleStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	sectionStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
-	boldStyle             = lipgloss.NewStyle().Bold(true)
-	mutedStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("146"))
-	panelStyle            = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("60")).Padding(0, 1)
-	userStyle             = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255")).Padding(0, 1)
-	assistantStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	errorStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	inputFillStyle        = lipgloss.NewStyle().Background(lipgloss.Color("236"))
-	inputCursorStyle      = lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("236"))
-	inputPromptStyle      = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255"))
-	inputTextStyle        = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255"))
-	inputPlaceholderStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("110"))
-	statusStyle         = lipgloss.NewStyle()
-	modeStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
-	modelStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("146"))
-	okStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Bold(true)
-	scrollbarTrackStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("60"))
-	scrollbarThumbStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("110"))
-	thinkingStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
-	thinkingEntryStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("110")).
-		Foreground(lipgloss.Color("255")).
-		PaddingLeft(1)
-	toolCallEntryStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("110")).
-		Foreground(lipgloss.Color("255")).
-		PaddingLeft(1)
-	toolResultEntryStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("103")).
-		Foreground(lipgloss.Color("146")).
-		PaddingLeft(1)
-	toolCallHeaderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
-	toolResultHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("146")).Bold(true)
-	progressFillStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("67"))
-	progressEmptyStyle    = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	inlineCodeRE   = regexp.MustCompile("`([^`]*)`")
+	markdownLinkRE = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
 )
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 func max(a, b int) int {
 	if a > b {

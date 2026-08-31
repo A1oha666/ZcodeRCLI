@@ -11,3 +11,6 @@
 coverage.txt
 
 .DS_Store
+
+# IDE
+.idea/

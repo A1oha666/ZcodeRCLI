@@ -92,8 +92,8 @@ func TestContextStatusUsesMillionWindowAndGreyEmptyProgress(t *testing.T) {
 	if !strings.Contains(plain, "1% 1.2k/1.0M") {
 		t.Fatalf("context status should show 1M window, got %q", plain)
 	}
-	if progressEmptyStyle.GetBackground() != lipgloss.Color("236") {
-		t.Fatalf("empty progress area should use grey background")
+	if progressEmptyStyle.GetForeground() != colorFaint {
+		t.Fatalf("empty progress area should use the faint foreground token")
 	}
 }
 
@@ -202,13 +202,10 @@ func TestViewKeepsInputInsideTerminalFrame(t *testing.T) {
 	if last := strings.TrimSpace(lines[len(lines)-1]); !strings.HasPrefix(last, "YOLO DeepSeek V4 Pro") {
 		t.Fatalf("status bar should be pinned to the last terminal row, got last line %q:\n%s", last, plain)
 	}
-	if gap := strings.TrimSpace(lines[len(lines)-2]); gap != "" {
-		t.Fatalf("input and status bar should be separated by a blank row, got %q:\n%s", gap, plain)
-	}
 	if count := strings.Count(plain, "YOLO DeepSeek V4 Pro"); count != 1 {
 		t.Fatalf("status bar should render once, got %d occurrences:\n%s", count, plain)
 	}
-	for _, want := range []string{"Zcoder", "DeepSeek V4 Pro", "What's ready", "Zcoder Go，可以帮你"} {
+	for _, want := range []string{"ZcodeR", "DeepSeek V4 Pro", "MCP 0/0", "编程助手"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("view should contain %q, got:\n%s", want, plain)
 		}
@@ -319,7 +316,7 @@ func TestFormatEventContent(t *testing.T) {
 		Title:   "read_file",
 		Content: `{"path":"README.md"}`,
 	})
-	if !strings.Contains(toolUse, "Tool use: read_file") || !strings.Contains(toolUse, "README.md") {
+	if !strings.Contains(toolUse, "$ read_file") || !strings.Contains(toolUse, "README.md") {
 		t.Fatalf("tool call event not formatted correctly: %q", toolUse)
 	}
 
@@ -328,7 +325,7 @@ func TestFormatEventContent(t *testing.T) {
 		Title:   "read_file",
 		Content: "Zcoder Go",
 	})
-	if !strings.Contains(toolResult, "Tool result: read_file") || !strings.Contains(toolResult, "Zcoder Go") {
+	if !strings.Contains(toolResult, "← read_file") || !strings.Contains(toolResult, "Zcoder Go") {
 		t.Fatalf("tool result event not formatted correctly: %q", toolResult)
 	}
 }
@@ -360,7 +357,7 @@ func TestTranscriptRendersFullProcessAndAnswer(t *testing.T) {
 
 	got := m.transcript()
 	plain := ansi.Strip(got)
-	for _, want := range []string{"Thinking #1", "Tool use: web_search", "沉默王二是谁", "Tool result: web_search", "搜索结果内容", "很长的 Markdown 输出"} {
+	for _, want := range []string{"Thinking #1", "$ web_search", "沉默王二是谁", "← web_search", "搜索结果内容", "很长的 Markdown 输出"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("transcript should render %q, got:\n%s", want, got)
 		}
@@ -433,7 +430,7 @@ func TestToolEventFlushesPendingThinkingLine(t *testing.T) {
 		Title:   "web_search",
 		Content: `{"query":"test"}`,
 	}))
-	for _, want := range []string{"Thinking #1", "先查询工具", "Tool use: web_search"} {
+	for _, want := range []string{"Thinking #1", "先查询工具", "$ web_search"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool event should flush pending thinking and render tool use %q, got:\n%s", want, got)
 		}
