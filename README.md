@@ -1,6 +1,6 @@
 # Zcoder Go
 
-运行在终端里的 AI Agent CLI。
+AI Agent CLI。
 
 ## 功能特性
 
